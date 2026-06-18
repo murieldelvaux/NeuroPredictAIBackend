@@ -28,25 +28,18 @@ async def predict(
     if not model_service.is_loaded:
         raise HTTPException(status_code=503, detail="Model not loaded. Check checkpoint path.")
 
-    if mri_file is None:
-        raise HTTPException(
-            status_code=400,
-            detail="MRI file (.nii.gz) is required for prediction."
-        )
-
-    # Salva o upload em arquivo temporário para o MONAI processar
-    with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
-        shutil.copyfileobj(mri_file.file, tmp)
-        tmp_path = tmp.name
+    tmp_path = None
+    if mri_file is not None:
+        with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
+            shutil.copyfileobj(mri_file.file, tmp)
+            tmp_path = tmp.name
 
     try:
         clinical = ClinicalFeatures(age=age, mmse=mmse, cdr=cdr, cdrtot=cdrtot)
-        result = model_service.predict(tmp_path, clinical)
+        result = model_service.predict(tmp_path, clinical)  # tmp_path pode ser None
         result.patient_id = patient_id
-
-        # Persiste predição no histórico do paciente
         save_prediction(patient_id, result.model_dump())
         return result
-
     finally:
-        os.unlink(tmp_path)
+        if tmp_path:
+            os.unlink(tmp_path)
