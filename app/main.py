@@ -9,7 +9,6 @@ from app.services.ai_service import model_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Carrega o modelo na inicialização e libera ao encerrar."""
     model_service.load()
     yield
     model_service.unload()
@@ -24,7 +23,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
