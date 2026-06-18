@@ -11,6 +11,23 @@ from app.db.in_memory import save_prediction
 router = APIRouter()
 
 
+def _nii_suffix(filename: Optional[str]) -> str:
+    """
+    Returns the correct suffix for the temp file based on the original filename.
+    Supports: .nii.gz  .nii  .gz  (nibabel detects format by extension)
+    """
+    if not filename:
+        return ".nii.gz"
+    name = filename.lower()
+    if name.endswith(".nii.gz"):
+        return ".nii.gz"
+    if name.endswith(".nii"):
+        return ".nii"
+    # fallback — keep whatever extension was sent
+    _, ext = os.path.splitext(name)
+    return ext or ".nii.gz"
+
+
 @router.post("", response_model=PredictionOutput)
 async def predict(
     patient_id: str = Form(...),
@@ -22,7 +39,7 @@ async def predict(
 ):
     """
     Roda inferência 3D ResNet no MRI e retorna classificação CN/MCI/AD.
-    O arquivo .nii.gz é obrigatório para predição completa.
+    O arquivo .nii ou .nii.gz é obrigatório para predição completa.
     Features clínicas são opcionais e enriquecem a explicação SHAP.
     """
     if not model_service.is_loaded:
@@ -31,11 +48,14 @@ async def predict(
     if mri_file is None:
         raise HTTPException(
             status_code=400,
-            detail="MRI file (.nii.gz) is required for prediction."
+            detail="MRI file (.nii or .nii.gz) is required for prediction."
         )
 
-    # Salva o upload em arquivo temporário para o MONAI processar
-    with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
+    # Derive the correct suffix from the original filename so nibabel
+    # can detect the format correctly (gzip vs raw NIfTI).
+    suffix = _nii_suffix(mri_file.filename)
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         shutil.copyfileobj(mri_file.file, tmp)
         tmp_path = tmp.name
 
@@ -44,7 +64,6 @@ async def predict(
         result = model_service.predict(tmp_path, clinical)
         result.patient_id = patient_id
 
-        # Persiste predição no histórico do paciente
         save_prediction(patient_id, result.model_dump())
         return result
 
