@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import sys
 import torch
 import numpy as np
 from pathlib import Path
@@ -6,9 +9,8 @@ import logging
 
 from monai.transforms import (
     Compose, LoadImage, EnsureChannelFirst, Orientation,
-    Spacing, ScaleIntensityRange, CropForeground, Resize, ToTensor
+    Spacing, ScaleIntensityRange, CropForeground, Resize, ToTensor,
 )
-from monai.networks.nets import resnet10
 
 from app.core.config import settings
 from app.schemas.prediction import PredictionOutput, FeatureImportance, ClinicalFeatures
@@ -16,6 +18,70 @@ from app.schemas.prediction import PredictionOutput, FeatureImportance, Clinical
 logger = logging.getLogger(__name__)
 
 CLASS_NAMES = ["CN", "MCI", "AD"]
+
+
+def _load_simple_resnet3d(num_classes: int) -> torch.nn.Module:
+    """
+    Dynamically import SimpleResNet3D from the sibling alzheimers-mri-3d repo.
+
+    Expected directory layout (both repos checked-out side-by-side):
+        <workspace>/
+            alzheimers-mri-3d/
+                src/models/cnn_3d.py   ← SimpleResNet3D lives here
+            NeuroPredictAIBackend/
+                app/services/ai_service.py  ← this file
+
+    Falls back to an inline copy of the class if the sibling repo is not
+    present (e.g. on a fresh deployment where only the backend is cloned).
+    """
+    sibling_root = Path(__file__).resolve().parents[3] / "alzheimers-mri-3d"
+    if sibling_root.exists() and str(sibling_root) not in sys.path:
+        sys.path.insert(0, str(sibling_root))
+        logger.info(f"Added sibling repo to sys.path: {sibling_root}")
+
+    try:
+        from src.models.cnn_3d import SimpleResNet3D  # type: ignore
+        logger.info("SimpleResNet3D imported from sibling repo.")
+        return SimpleResNet3D(in_channels=1, num_classes=num_classes)
+    except ImportError:
+        logger.warning(
+            "Could not import from sibling repo — using inline SimpleResNet3D copy."
+        )
+
+    # ── Inline fallback (identical to cnn_3d.py) ──────────────────────────
+    import torch.nn as nn
+
+    class SimpleResNet3D(nn.Module):  # type: ignore[no-redef]
+        def __init__(self, in_channels: int = 1, num_classes: int = 3):
+            super().__init__()
+            self.encoder = nn.Sequential(
+                nn.Conv3d(in_channels, 16, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm3d(16),
+                nn.ReLU(inplace=True),
+                nn.MaxPool3d(2),
+                nn.Conv3d(16, 32, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm3d(32),
+                nn.ReLU(inplace=True),
+                nn.MaxPool3d(2),
+                nn.Conv3d(32, 64, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm3d(64),
+                nn.ReLU(inplace=True),
+                nn.MaxPool3d(2),
+            )
+            self.classifier = nn.Sequential(
+                nn.AdaptiveAvgPool3d((1, 1, 1)),
+                nn.Flatten(),
+                nn.Linear(64, 128),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.3),
+                nn.Linear(128, num_classes),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x = self.encoder(x)
+            return self.classifier(x)
+
+    return SimpleResNet3D(in_channels=1, num_classes=num_classes)
 
 
 class ModelService:
@@ -39,12 +105,7 @@ class ModelService:
         try:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-            self.model = resnet10(
-                pretrained=False,
-                n_input_channels=1,
-                num_classes=settings.num_classes,
-                spatial_dims=3,
-            )
+            self.model = _load_simple_resnet3d(num_classes=settings.num_classes)
 
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
             state = checkpoint.get("model_state_dict", checkpoint)
@@ -110,24 +171,24 @@ class ModelService:
                 factors.append(FeatureImportance(
                     feature="MMSE Score",
                     impact=impact,
-                    direction="risk" if clinical.mmse < 24 else "protective"
+                    direction="risk" if clinical.mmse < 24 else "protective",
                 ))
             if clinical.cdr is not None and clinical.cdr > 0:
                 factors.append(FeatureImportance(
                     feature="CDR Rating",
                     impact=round(clinical.cdr * 0.3, 3),
-                    direction="risk"
+                    direction="risk",
                 ))
             if clinical.age is not None and clinical.age > 70:
                 factors.append(FeatureImportance(
                     feature="Age",
                     impact=round((clinical.age - 70) / 100, 3),
-                    direction="risk"
+                    direction="risk",
                 ))
         factors.append(FeatureImportance(
-            feature="MRI 3D Features (ResNet)",
+            feature="MRI 3D Features (SimpleResNet3D)",
             impact=round(float(np.max(probs)), 3),
-            direction="risk" if np.argmax(probs) > 0 else "protective"
+            direction="risk" if np.argmax(probs) > 0 else "protective",
         ))
         return sorted(factors, key=lambda x: x.impact, reverse=True)
 
