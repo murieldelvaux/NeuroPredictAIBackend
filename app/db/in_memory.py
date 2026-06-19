@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 from app.schemas.patient import Patient, PatientDetail
-from datetime import datetime
+from datetime import datetime, date
 
 # Store em memória para MVP — substituir por PostgreSQL em produção
 _patients: Dict[str, Patient] = {}
@@ -9,15 +9,18 @@ _predictions: Dict[str, List[dict]] = {}
 # Seed com pacientes de exemplo
 _seed = [
     Patient(id="pat-01", name="Eleanor Vance", age=74, sex="F",
-            clinical_data={"mmse": 22, "cdr": 0.5, "cdrtot": 2.5,
+            date_of_birth=date(1950, 3, 14),
+            clinical_data={"mmse": 22, "moca": 19, "cdr": 0.5, "cdrtot": 2.5,
                            "comorbidities": ["hypertension"], "family_history": True,
                            "education_years": 12}),
     Patient(id="pat-02", name="Robert Chen", age=68, sex="M",
-            clinical_data={"mmse": 28, "cdr": 0.0, "cdrtot": 0.0,
+            date_of_birth=date(1956, 7, 22),
+            clinical_data={"mmse": 28, "moca": 27, "cdr": 0.0, "cdrtot": 0.0,
                            "comorbidities": [], "family_history": False,
                            "education_years": 16}),
     Patient(id="pat-03", name="Maria Santos", age=81, sex="F",
-            clinical_data={"mmse": 17, "cdr": 1.0, "cdrtot": 5.0,
+            date_of_birth=date(1943, 11, 5),
+            clinical_data={"mmse": 17, "moca": 13, "cdr": 1.0, "cdrtot": 5.0,
                            "comorbidities": ["diabetes", "depression"],
                            "family_history": True, "education_years": 8}),
 ]
