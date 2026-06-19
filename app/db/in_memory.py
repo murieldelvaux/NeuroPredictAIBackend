@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional
-from app.schemas.patient import Patient, PatientDetail
+from app.schemas.patient import Patient, PatientDetail, PatientResponse
 from datetime import datetime, date
 
 # Store em memória para MVP — substituir por PostgreSQL em produção
@@ -38,7 +38,7 @@ def get_patient(patient_id: str) -> Optional[PatientDetail]:
     if not patient:
         return None
     return PatientDetail(
-        patient=patient,
+        patient=PatientResponse(**patient.model_dump()),
         predictions=_predictions.get(patient_id, []),
     )
 

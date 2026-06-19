@@ -29,3 +29,7 @@ async def test_get_patient_detail():
     body = resp.json()
     assert "patient" in body
     assert body["patient"]["id"] == "pat-01"
+    assert body["patient"]["sex"] == "Female"
+    assert body["patient"]["date_of_birth"] == "14/03/1950"
+    assert body["patient"]["created_at"]
+    assert "/" in body["patient"]["created_at"]

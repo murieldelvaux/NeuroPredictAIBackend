@@ -62,5 +62,5 @@ class PatientResponse(Patient):
 
 
 class PatientDetail(BaseModel):
-    patient: Patient
+    patient: PatientResponse
     predictions: List[dict] = Field(default_factory=list)
