@@ -1,15 +1,15 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
 
-from app.schemas.patient import Patient, PatientCreate, PatientDetail
+from app.schemas.patient import Patient, PatientCreate, PatientDetail, PatientResponse
 from app.db.in_memory import list_patients, get_patient, create_patient
 
 router = APIRouter()
 
 
-@router.get("", response_model=List[Patient])
+@router.get("", response_model=List[PatientResponse])
 async def get_patients():
-    """Lista todos os pacientes registrados."""
+    """Lista todos os pacientes registrados com datas no formato dd/mm/aaaa."""
     return list_patients()
 
 
@@ -22,7 +22,7 @@ async def get_patient_detail(patient_id: str):
     return detail
 
 
-@router.post("", response_model=Patient, status_code=201)
+@router.post("", response_model=PatientResponse, status_code=201)
 async def create_new_patient(payload: PatientCreate):
     """Cria novo paciente no workspace clínico."""
     patient = Patient(**payload.model_dump())

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 from typing import Optional, List
 from datetime import date
 import uuid
@@ -26,6 +26,34 @@ class Patient(PatientCreate):
     id: str = Field(default_factory=lambda: f"pat-{uuid.uuid4().hex[:8]}")
     created_at: str = ""
     last_prediction: Optional[dict] = None
+
+
+class PatientResponse(Patient):
+    """Schema de resposta com datas formatadas como dd/mm/aaaa."""
+
+    @model_serializer(mode="wrap")
+    def serialize_with_formatted_dates(self, handler) -> dict:
+        data = handler(self)
+        # Formata created_at de ISO para dd/mm/aaaa (ignora a parte de hora se houver)
+        if data.get("created_at"):
+            try:
+                from datetime import datetime
+                raw = data["created_at"]
+                # Suporta tanto date ISO puro quanto datetime ISO completo
+                dt = datetime.fromisoformat(raw)
+                data["created_at"] = dt.strftime("%d/%m/%Y")
+            except ValueError:
+                pass  # mantém o valor original se não conseguir parsear
+        # Formata date_of_birth de date ISO para dd/mm/aaaa
+        if data.get("date_of_birth"):
+            try:
+                from datetime import date as date_type
+                dob = self.date_of_birth
+                if isinstance(dob, date_type):
+                    data["date_of_birth"] = dob.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+        return data
 
 
 class PatientDetail(BaseModel):
