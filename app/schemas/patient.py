@@ -3,6 +3,7 @@ from typing import Optional, List
 from datetime import date
 import uuid
 
+_SEX_LABEL = {"M": "Male", "F": "Female"}
 
 class ClinicalData(BaseModel):
     mmse: Optional[float] = Field(None, ge=0, le=30, description="Mini-Mental State Exam (0-30)")
@@ -53,6 +54,10 @@ class PatientResponse(Patient):
                     data["date_of_birth"] = dob.strftime("%d/%m/%Y")
             except Exception:
                 pass
+        # Expande sexo: M -> Male, F -> Female
+        if data.get("sex") in _SEX_LABEL:
+            data["sex"] = _SEX_LABEL[data["sex"]]
+
         return data
 
 
