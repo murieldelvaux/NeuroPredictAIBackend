@@ -17,7 +17,7 @@ from app.schemas.prediction import PredictionOutput, FeatureImportance, Clinical
 
 logger = logging.getLogger(__name__)
 
-CLASS_NAMES = ["CN", "MCI", "AD"]
+CLASS_NAMES = ["CN", "MCI", "DEM"]
 
 
 def _load_simple_resnet3d(num_classes: int) -> torch.nn.Module:
