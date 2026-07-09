@@ -5,6 +5,7 @@ import uuid
 
 _SEX_LABEL = {"M": "Male", "F": "Female"}
 
+
 class ClinicalData(BaseModel):
     mmse: Optional[float] = Field(None, ge=0, le=30, description="Mini-Mental State Exam (0-30)")
     moca: Optional[float] = Field(None, ge=0, le=30, description="Montreal Cognitive Assessment (0-30)")
@@ -29,34 +30,58 @@ class Patient(PatientCreate):
     last_prediction: Optional[dict] = None
 
 
+def _format_prediction_dict(pred: dict) -> dict:
+    """Formata prediction_date dentro de um dict de predição para dd/mm/aaaa."""
+    if not pred:
+        return pred
+    pred = dict(pred)
+    raw = pred.get("prediction_date")
+    if raw:
+        try:
+            if isinstance(raw, date):
+                pred["prediction_date"] = raw.strftime("%d/%m/%Y")
+            else:
+                # Pode vir como string ISO (YYYY-MM-DD) após model_dump()
+                from datetime import date as date_type
+                d = date_type.fromisoformat(str(raw))
+                pred["prediction_date"] = d.strftime("%d/%m/%Y")
+        except (ValueError, TypeError):
+            pass
+    return pred
+
+
 class PatientResponse(Patient):
     """Schema de resposta com datas formatadas como dd/mm/aaaa."""
 
     @model_serializer(mode="wrap")
     def serialize_with_formatted_dates(self, handler) -> dict:
         data = handler(self)
-        # Formata created_at de ISO para dd/mm/aaaa (ignora a parte de hora se houver)
+
+        # Formata created_at de ISO para dd/mm/aaaa
         if data.get("created_at"):
             try:
                 from datetime import datetime
-                raw = data["created_at"]
-                # Suporta tanto date ISO puro quanto datetime ISO completo
-                dt = datetime.fromisoformat(raw)
+                dt = datetime.fromisoformat(data["created_at"])
                 data["created_at"] = dt.strftime("%d/%m/%Y")
             except ValueError:
-                pass  # mantém o valor original se não conseguir parsear
-        # Formata date_of_birth de date ISO para dd/mm/aaaa
+                pass
+
+        # Formata date_of_birth
         if data.get("date_of_birth"):
             try:
-                from datetime import date as date_type
                 dob = self.date_of_birth
-                if isinstance(dob, date_type):
+                if isinstance(dob, date):
                     data["date_of_birth"] = dob.strftime("%d/%m/%Y")
             except Exception:
                 pass
+
         # Expande sexo: M -> Male, F -> Female
         if data.get("sex") in _SEX_LABEL:
             data["sex"] = _SEX_LABEL[data["sex"]]
+
+        # Formata prediction_date dentro de last_prediction
+        if data.get("last_prediction"):
+            data["last_prediction"] = _format_prediction_dict(data["last_prediction"])
 
         return data
 
@@ -64,3 +89,11 @@ class PatientResponse(Patient):
 class PatientDetail(BaseModel):
     patient: PatientResponse
     predictions: List[dict] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def serialize_with_formatted_predictions(self, handler) -> dict:
+        data = handler(self)
+        # Formata prediction_date em cada predição da lista
+        if data.get("predictions"):
+            data["predictions"] = [_format_prediction_dict(p) for p in data["predictions"]]
+        return data

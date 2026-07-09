@@ -3,6 +3,7 @@ from typing import Optional
 import tempfile
 import shutil
 import os
+from datetime import date
 
 from app.schemas.prediction import PredictionOutput, ClinicalFeatures
 from app.services.ai_service import model_service
@@ -31,6 +32,7 @@ def _nii_suffix(filename: Optional[str]) -> str:
 @router.post("", response_model=PredictionOutput)
 async def predict(
     patient_id: str = Form(...),
+    prediction_date: date = Form(..., description="Data da predição no formato YYYY-MM-DD"),
     mri_file: Optional[UploadFile] = File(None),
     age: Optional[float] = Form(None),
     mmse: Optional[float] = Form(None),
@@ -41,6 +43,7 @@ async def predict(
     Roda inferência 3D ResNet no MRI e retorna classificação CN/MCI/AD.
     O arquivo .nii ou .nii.gz é obrigatório para predição completa.
     Features clínicas são opcionais e enriquecem a explicação SHAP.
+    `prediction_date` é obrigatório e deve ser enviado no formato YYYY-MM-DD.
     """
     if not model_service.is_loaded:
         raise HTTPException(status_code=503, detail="Model not loaded. Check checkpoint path.")
@@ -51,8 +54,6 @@ async def predict(
             detail="MRI file (.nii or .nii.gz) is required for prediction."
         )
 
-    # Derive the correct suffix from the original filename so nibabel
-    # can detect the format correctly (gzip vs raw NIfTI).
     suffix = _nii_suffix(mri_file.filename)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -61,8 +62,9 @@ async def predict(
 
     try:
         clinical = ClinicalFeatures(age=age, mmse=mmse, cdr=cdr, cdrtot=cdrtot)
-        result = model_service.predict(tmp_path, clinical)  # tmp_path pode ser None
+        result = model_service.predict(tmp_path, clinical)
         result.patient_id = patient_id
+        result.prediction_date = prediction_date
 
         save_prediction(patient_id, result.model_dump())
         return result
