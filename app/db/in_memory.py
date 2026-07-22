@@ -1,15 +1,19 @@
-from typing import Dict, List, Optional
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import List, Optional
+import asyncio
+
+from sqlalchemy import select, func, delete
+
+from app.db.database import async_session_maker, engine
+from app.db.models import Base, PatientRecord, PredictionRecord
 from app.schemas.patient import Patient, PatientDetail, PatientResponse
-from datetime import datetime, date
-
-# Store em memória para MVP — substituir por PostgreSQL em produção
-_patients: Dict[str, Patient] = {}
-_predictions: Dict[str, List[dict]] = {}
 
 # ---------------------------------------------------------------------------
-# Predições de seed — cobrindo todos os campos de PredictionOutput
+# Seed data used for local development and tests
 # ---------------------------------------------------------------------------
-_seed_predictions: Dict[str, List[dict]] = {
+_seed_predictions: dict[str, list[dict]] = {
     "pat-01": [
         {
             "patient_id": "pat-01",
@@ -94,80 +98,220 @@ _seed_predictions: Dict[str, List[dict]] = {
     ],
 }
 
-# Seed com pacientes de exemplo
-_seed = [
-    Patient(id="pat-01", name="Eleanor Vance", age=74, sex="F",
-            date_of_birth=date(1950, 3, 14),
-            clinical_data={"mmse": 22, "moca": 19, "cdr": 0.5, "cdrtot": 2.5,
-               "biomarkers": ["abeta42_low", "tau_high"],
-               "symptoms": ["memory_loss", "disorientation"],
-               "medications": ["donepezil", "losartan"],
-               "mri_file": {
-                   "filename": "pat-01-mri.nii.gz",
-                   "content_type": "application/gzip",
-                   "size": 15,
-               },
-                           "comorbidities": ["hypertension"], "family_history": True,
-                           "education_years": 12}),
-    Patient(id="pat-02", name="Robert Chen", age=68, sex="M",
-            date_of_birth=date(1956, 7, 22),
-            clinical_data={"mmse": 28, "moca": 27, "cdr": 0.0, "cdrtot": 0.0,
-               "biomarkers": ["abeta42_normal", "ptau_normal"],
-               "symptoms": ["mild_forgetfulness"],
-               "medications": ["atorvastatin"],
-               "mri_file": {
-                   "filename": "pat-02-mri.nii.gz",
-                   "content_type": "application/gzip",
-                   "size": 15,
-               },
-                           "comorbidities": [], "family_history": False,
-                           "education_years": 16}),
-    Patient(id="pat-03", name="Maria Santos", age=81, sex="F",
-            date_of_birth=date(1943, 11, 5),
-            clinical_data={"mmse": 17, "moca": 13, "cdr": 1.0, "cdrtot": 5.0,
-               "biomarkers": ["tau_very_high", "hippocampal_atrophy"],
-               "symptoms": ["memory_loss", "language_difficulty", "apathy"],
-               "medications": ["memantine", "sertraline", "metformin"],
-               "mri_file": {
-                   "filename": "pat-03-mri.nii.gz",
-                   "content_type": "application/gzip",
-                   "size": 15,
-               },
-                           "comorbidities": ["diabetes", "depression"],
-                           "family_history": True, "education_years": 8}),
+_seed_patients = [
+    Patient(
+        id="pat-01",
+        name="Eleanor Vance",
+        age=74,
+        sex="F",
+        date_of_birth=date(1950, 3, 14),
+        clinical_data={
+            "mmse": 22,
+            "moca": 19,
+            "cdr": 0.5,
+            "cdrtot": 2.5,
+            "biomarkers": ["abeta42_low", "tau_high"],
+            "symptoms": ["memory_loss", "disorientation"],
+            "medications": ["donepezil", "losartan"],
+            "mri_file": {
+                "filename": "pat-01-mri.nii.gz",
+                "content_type": "application/gzip",
+                "size": 15,
+            },
+            "comorbidities": ["hypertension"],
+            "family_history": True,
+            "education_years": 12,
+        },
+    ),
+    Patient(
+        id="pat-02",
+        name="Robert Chen",
+        age=68,
+        sex="M",
+        date_of_birth=date(1956, 7, 22),
+        clinical_data={
+            "mmse": 28,
+            "moca": 27,
+            "cdr": 0.0,
+            "cdrtot": 0.0,
+            "biomarkers": ["abeta42_normal", "ptau_normal"],
+            "symptoms": ["mild_forgetfulness"],
+            "medications": ["atorvastatin"],
+            "mri_file": {
+                "filename": "pat-02-mri.nii.gz",
+                "content_type": "application/gzip",
+                "size": 15,
+            },
+            "comorbidities": [],
+            "family_history": False,
+            "education_years": 16,
+        },
+    ),
+    Patient(
+        id="pat-03",
+        name="Maria Santos",
+        age=81,
+        sex="F",
+        date_of_birth=date(1943, 11, 5),
+        clinical_data={
+            "mmse": 17,
+            "moca": 13,
+            "cdr": 1.0,
+            "cdrtot": 5.0,
+            "biomarkers": ["tau_very_high", "hippocampal_atrophy"],
+            "symptoms": ["memory_loss", "language_difficulty", "apathy"],
+            "medications": ["memantine", "sertraline", "metformin"],
+            "mri_file": {
+                "filename": "pat-03-mri.nii.gz",
+                "content_type": "application/gzip",
+                "size": 15,
+            },
+            "comorbidities": ["diabetes", "depression"],
+            "family_history": True,
+            "education_years": 8,
+        },
+    ),
 ]
-for p in _seed:
-    p.created_at = datetime.now().isoformat()
-    preds = _seed_predictions.get(p.id, [])
-    _predictions[p.id] = preds
-    if preds:
-        p.last_prediction = preds[-1]
-    _patients[p.id] = p
+
+_initialized = False
+_init_lock = asyncio.Lock()
 
 
-def list_patients() -> List[Patient]:
-    return list(_patients.values())
-
-
-def get_patient(patient_id: str) -> Optional[PatientDetail]:
-    patient = _patients.get(patient_id)
-    if not patient:
-        return None
-    return PatientDetail(
-        patient=PatientResponse(**patient.model_dump()),
-        predictions=_predictions.get(patient_id, []),
+def _patient_to_schema(record: PatientRecord) -> Patient:
+    return Patient(
+        id=record.id,
+        name=record.name,
+        age=record.age,
+        sex=record.sex,
+        date_of_birth=record.date_of_birth,
+        clinical_data=record.clinical_data,
+        created_at=record.created_at.isoformat(),
+        last_prediction=record.last_prediction,
     )
 
 
-def create_patient(patient: Patient) -> Patient:
-    patient.created_at = datetime.now().isoformat()
-    _patients[patient.id] = patient
-    return patient
+def _prediction_to_schema_value(prediction: dict) -> dict:
+    data = dict(prediction)
+    if isinstance(data.get("prediction_date"), (datetime, date)):
+        data["prediction_date"] = data["prediction_date"].isoformat()
+    return data
 
 
-def save_prediction(patient_id: str, prediction: dict):
-    if patient_id not in _predictions:
-        _predictions[patient_id] = []
-    _predictions[patient_id].append(prediction)
-    if patient_id in _patients:
-        _patients[patient_id].last_prediction = prediction
+def _clinical_data_to_dict(clinical_data):
+    if hasattr(clinical_data, "model_dump"):
+        return clinical_data.model_dump(mode="json")
+    return clinical_data
+
+
+async def init_db() -> None:
+    global _initialized
+    if _initialized:
+        return
+
+    async with _init_lock:
+        if _initialized:
+            return
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with async_session_maker() as session:
+            result = await session.execute(select(func.count()).select_from(PatientRecord))
+            count = int(result.scalar_one() or 0)
+            if count == 0:
+                for patient in _seed_patients:
+                    last_prediction = _seed_predictions.get(patient.id)
+                    session.add(
+                        PatientRecord(
+                            id=patient.id,
+                            name=patient.name,
+                            age=patient.age,
+                            sex=patient.sex,
+                            date_of_birth=patient.date_of_birth,
+                            clinical_data=_clinical_data_to_dict(patient.clinical_data),
+                            created_at=datetime.now(),
+                            last_prediction=_prediction_to_schema_value(last_prediction[-1]) if last_prediction else None,
+                        )
+                    )
+
+                for patient_id, predictions in _seed_predictions.items():
+                    for prediction in predictions:
+                        session.add(
+                            PredictionRecord(
+                                patient_id=patient_id,
+                                payload=_prediction_to_schema_value(prediction),
+                                created_at=datetime.now(),
+                            )
+                        )
+
+                await session.commit()
+
+        _initialized = True
+
+
+async def list_patients() -> List[Patient]:
+    await init_db()
+    async with async_session_maker() as session:
+        result = await session.execute(select(PatientRecord).order_by(PatientRecord.created_at.asc()))
+        return [_patient_to_schema(record) for record in result.scalars().all()]
+
+
+async def get_patient(patient_id: str) -> Optional[PatientDetail]:
+    await init_db()
+    async with async_session_maker() as session:
+        patient_result = await session.get(PatientRecord, patient_id)
+        if not patient_result:
+            return None
+
+        prediction_result = await session.execute(
+            select(PredictionRecord)
+            .where(PredictionRecord.patient_id == patient_id)
+            .order_by(PredictionRecord.created_at.asc(), PredictionRecord.id.asc())
+        )
+        predictions = [item.payload for item in prediction_result.scalars().all()]
+        return PatientDetail(
+            patient=PatientResponse(**_patient_to_schema(patient_result).model_dump()),
+            predictions=predictions,
+        )
+
+
+async def create_patient(patient: Patient) -> Patient:
+    await init_db()
+    async with async_session_maker() as session:
+        existing = await session.get(PatientRecord, patient.id)
+        if existing:
+            raise ValueError(f"Patient {patient.id} already exists")
+
+        record = PatientRecord(
+            id=patient.id,
+            name=patient.name,
+            age=patient.age,
+            sex=patient.sex,
+            date_of_birth=patient.date_of_birth,
+            clinical_data=_clinical_data_to_dict(patient.clinical_data),
+            created_at=datetime.now(),
+            last_prediction=patient.last_prediction,
+        )
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        return _patient_to_schema(record)
+
+
+async def save_prediction(patient_id: str, prediction: dict):
+    await init_db()
+    async with async_session_maker() as session:
+        patient = await session.get(PatientRecord, patient_id)
+        if not patient:
+            return
+
+        prediction_payload = _prediction_to_schema_value(prediction)
+        session.add(
+            PredictionRecord(
+                patient_id=patient_id,
+                payload=prediction_payload,
+                created_at=datetime.now(),
+            )
+        )
+        patient.last_prediction = prediction_payload
+        await session.commit()

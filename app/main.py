@@ -5,10 +5,12 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.routers import patients, prediction
 from app.services.ai_service import model_service
+from app.db.in_memory import init_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await init_db()
     model_service.load()
     yield
     model_service.unload()

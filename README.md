@@ -16,6 +16,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Create a `.env` file with your Neon connection string:
+
+```bash
+DATABASE_URL=postgresql+asyncpg://<user>:<password>@<host>/<db>?sslmode=require
+```
+
+If `DATABASE_URL` is not set, the backend falls back to a local SQLite database at `./neuropredict.db`.
+
 ## Run
 
 ```bash
@@ -39,7 +47,9 @@ app/
 │   ├── ai_service.py    # Carrega modelo .pth e roda inferência
 │   └── explainability.py
 ├── db/
-│   └── in_memory.py     # Store em memória (MVP)
+│   ├── database.py      # Engine/session SQLAlchemy
+│   ├── models.py        # ORM models
+│   └── in_memory.py     # Repositório persistido (mantém a API antiga)
 └── core/
     └── config.py        # Configurações via .env
 ```

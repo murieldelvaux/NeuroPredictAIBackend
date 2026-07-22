@@ -12,13 +12,13 @@ router = APIRouter()
 @router.get("", response_model=List[PatientResponse])
 async def get_patients():
     """Lista todos os pacientes registrados com datas no formato dd/mm/aaaa."""
-    return list_patients()
+    return await list_patients()
 
 
 @router.get("/{patient_id}", response_model=PatientDetail)
 async def get_patient_detail(patient_id: str):
     """Retorna perfil completo + histórico de predições de um paciente."""
-    detail = get_patient(patient_id)
+    detail = await get_patient(patient_id)
     if not detail:
         raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
     return detail
@@ -51,4 +51,4 @@ async def create_new_patient(
         date_of_birth=date_of_birth,
         clinical_data=clinical_data_payload,
     )
-    return create_patient(patient)
+    return await create_patient(patient)
