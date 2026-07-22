@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     spatial_size: int = 128
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     log_level: str = "info"
+    database_url: str = "sqlite+aiosqlite:///./neuropredict.db"
+    database_echo: bool = False
 
     @property
     def cors_origins_list(self) -> List[str]:

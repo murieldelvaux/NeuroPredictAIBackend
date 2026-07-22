@@ -65,7 +65,7 @@ async def predict(
         result = model_service.predict(tmp_path, clinical, prediction_date=prediction_date)
         result.patient_id = patient_id
 
-        save_prediction(patient_id, result.model_dump())
+        await save_prediction(patient_id, result.model_dump(mode="json"))
         return result
     finally:
         if tmp_path:
