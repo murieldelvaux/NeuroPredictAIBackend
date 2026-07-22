@@ -6,6 +6,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional
 import logging
+from datetime import date
 
 from monai.transforms import (
     Compose, LoadImage, EnsureChannelFirst, Orientation,
@@ -136,9 +137,14 @@ class ModelService:
         self.model = None
         self.is_loaded = False
 
-    def predict(self, nii_path: str, clinical: Optional[ClinicalFeatures] = None) -> PredictionOutput:
+    def predict(
+        self,
+        nii_path: str,
+        clinical: Optional[ClinicalFeatures] = None,
+        prediction_date: Optional[date] = None,
+    ) -> PredictionOutput:
         if not self.is_loaded:
-            return self._mock_prediction()
+            return self._mock_prediction(prediction_date=prediction_date)
 
         img_tensor = self.transforms(nii_path)
         img_tensor = img_tensor.unsqueeze(0).to(self.device)
@@ -156,6 +162,7 @@ class ModelService:
 
         return PredictionOutput(
             patient_id="",
+            prediction_date=prediction_date or date.today(),
             risk_score=risk_score,
             classification=classification,
             confidence=confidence,
@@ -192,9 +199,10 @@ class ModelService:
         ))
         return sorted(factors, key=lambda x: x.impact, reverse=True)
 
-    def _mock_prediction(self) -> PredictionOutput:
+    def _mock_prediction(self, prediction_date: Optional[date] = None) -> PredictionOutput:
         return PredictionOutput(
             patient_id="",
+            prediction_date=prediction_date or date.today(),
             risk_score=0.0,
             classification="CN",
             confidence=0.0,

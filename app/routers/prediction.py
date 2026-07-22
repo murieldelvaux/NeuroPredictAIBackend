@@ -62,9 +62,8 @@ async def predict(
 
     try:
         clinical = ClinicalFeatures(age=age, mmse=mmse, cdr=cdr, cdrtot=cdrtot)
-        result = model_service.predict(tmp_path, clinical)
+        result = model_service.predict(tmp_path, clinical, prediction_date=prediction_date)
         result.patient_id = patient_id
-        result.prediction_date = prediction_date
 
         save_prediction(patient_id, result.model_dump())
         return result

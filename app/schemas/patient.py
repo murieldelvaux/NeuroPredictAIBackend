@@ -3,7 +3,7 @@ from typing import Optional, List
 from datetime import date
 import uuid
 
-_SEX_LABEL = {"M": "Male", "F": "Female"}
+_SEX_LABEL = {"M": "Masculino", "F": "Feminino"}
 
 
 class ClinicalData(BaseModel):
@@ -11,6 +11,10 @@ class ClinicalData(BaseModel):
     moca: Optional[float] = Field(None, ge=0, le=30, description="Montreal Cognitive Assessment (0-30)")
     cdr: Optional[float] = Field(None, description="Clinical Dementia Rating (0, 0.5, 1, 2, 3)")
     cdrtot: Optional[float] = Field(None, description="CDR Sum of Boxes")
+    biomarkers: List[str] = Field(default_factory=list, description="Lista de biomarcadores")
+    symptoms: List[str] = Field(default_factory=list, description="Lista de sintomas atuais")
+    medications: List[str] = Field(default_factory=list, description="Lista de medicamentos em uso")
+    mri_file: Optional[dict] = Field(None, description="Metadados e conteúdo do arquivo de MRI")
     comorbidities: List[str] = Field(default_factory=list)
     family_history: Optional[bool] = None
     education_years: Optional[int] = None
@@ -21,7 +25,7 @@ class PatientCreate(BaseModel):
     age: int = Field(..., ge=18, le=120)
     sex: str = Field(..., pattern="^[MF]$")
     date_of_birth: Optional[date] = None
-    clinical_data: Optional[ClinicalData] = None
+    clinical_data: ClinicalData
 
 
 class Patient(PatientCreate):
@@ -75,7 +79,7 @@ class PatientResponse(Patient):
             except Exception:
                 pass
 
-        # Expande sexo: M -> Male, F -> Female
+        # Expande sexo: M -> Masculino, F -> Feminino
         if data.get("sex") in _SEX_LABEL:
             data["sex"] = _SEX_LABEL[data["sex"]]
 
