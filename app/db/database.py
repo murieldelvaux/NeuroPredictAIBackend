@@ -19,12 +19,23 @@ def _normalize_database_url(raw_url: str) -> str:
 def get_database_url() -> str:
     return _normalize_database_url(settings.database_url)
 
+# Adicione essa função antes do `engine`
+def _get_connect_args(url: str) -> dict:
+    """Retorna connect_args com SSL para Neon (asyncpg não aceita ssl na URL)."""
+    if "neon.tech" in url or "neondb" in url:
+        return {"ssl": "require"}
+    return {}
 
+
+# Troque o engine atual por esse
 engine = create_async_engine(
     get_database_url(),
     echo=settings.database_echo,
     future=True,
+    connect_args=_get_connect_args(get_database_url()),
+    pool_pre_ping=True,
 )
+
 
 async_session_maker = async_sessionmaker(
     bind=engine,
