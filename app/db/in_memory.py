@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from typing import List, Optional
 import asyncio
 
 from sqlalchemy import select, func, delete
 
+from app.core.config import settings
 from app.db.database import async_session_maker, engine
 from app.db.models import Base, PatientRecord, PredictionRecord
-from app.schemas.patient import Patient, PatientDetail, PatientResponse
+from app.schemas.patient import MRIFile, Patient, PatientDetail, PatientResponse
 
 # ---------------------------------------------------------------------------
 # Seed data used for local development and tests
@@ -177,14 +179,52 @@ _initialized = False
 _init_lock = asyncio.Lock()
 
 
+def _mri_storage_root() -> Path:
+    return Path(settings.mri_storage_dir)
+
+
+def _mri_file_url(patient_id: str) -> str:
+    return f"/patients/{patient_id}/mri-file"
+
+
+def _safe_filename(filename: Optional[str]) -> str:
+    if not filename:
+        return "mri.nii.gz"
+    return Path(filename).name
+
+
+def _patient_mri_file_path(patient_id: str, filename: Optional[str]) -> Path:
+    return _mri_storage_root() / patient_id / _safe_filename(filename)
+
+
+async def store_patient_mri_file(patient_id: str, uploaded_file) -> MRIFile:
+    file_bytes = await uploaded_file.read()
+    file_path = _patient_mri_file_path(patient_id, uploaded_file.filename)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(file_bytes)
+
+    return MRIFile(
+        filename=_safe_filename(uploaded_file.filename),
+        content_type=uploaded_file.content_type,
+        size=len(file_bytes),
+        url=_mri_file_url(patient_id),
+    )
+
+
 def _patient_to_schema(record: PatientRecord) -> Patient:
+    clinical_data = dict(record.clinical_data or {})
+    mri_file = clinical_data.get("mri_file")
+    if isinstance(mri_file, dict) and mri_file.get("filename") and not mri_file.get("url"):
+        mri_file["url"] = _mri_file_url(record.id)
+
     return Patient(
         id=record.id,
         name=record.name,
         age=record.age,
         sex=record.sex,
         date_of_birth=record.date_of_birth,
-        clinical_data=record.clinical_data,
+        clinical_data=clinical_data,
+        mri_file=MRIFile(**mri_file) if isinstance(mri_file, dict) else None,
         created_at=record.created_at.isoformat(),
         last_prediction=record.last_prediction,
     )
