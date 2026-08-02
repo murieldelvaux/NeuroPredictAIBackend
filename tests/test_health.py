@@ -4,6 +4,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+from app.core.config import settings
 from app.services.ai_service import model_service
 from app.schemas.prediction import PredictionOutput
 
@@ -39,6 +40,7 @@ async def test_get_patient_detail():
     assert body["patient"]["created_at"]
     assert "/" in body["patient"]["created_at"]
     assert body["patient"]["clinical_data"]["mri_file"]["filename"] == "pat-01-mri.nii.gz"
+    assert body["patient"]["mri_file"]["url"].endswith("/patients/pat-01/mri-file")
 
 
 @pytest.mark.asyncio
@@ -80,7 +82,9 @@ async def test_predict_forwards_prediction_date(monkeypatch):
     assert resp.json()["prediction_date"] == "15/07/2026"
 
 
-def test_create_patient_with_mri_upload():
+def test_create_patient_with_mri_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "mri_storage_dir", str(tmp_path / "mri"), raising=False)
+
     client = TestClient(app)
     resp = client.post(
         "/patients",
@@ -109,8 +113,16 @@ def test_create_patient_with_mri_upload():
 
     assert resp.status_code == 201
     body = resp.json()
+    assert body["clinical_data"]["mri_file"]["url"] == f"http://testserver/patients/{body['id']}/mri-file"
     assert body["name"] == "Joaquim Silva"
     assert body["clinical_data"]["mmse"] == 19
     assert body["clinical_data"]["biomarkers"][0] == "ApoE4 positive (e3/e4)"
     assert body["clinical_data"]["mri_file"]["filename"] == "joaquim-silva-mri.nii.gz"
     assert body["clinical_data"]["mri_file"]["size"] == len(b"fake-mri-bytes")
+    assert body["mri_file"]["url"] == f"http://testserver/patients/{body['id']}/mri-file"
+
+    download = client.get(body["mri_file"]["url"])
+    assert download.status_code == 200
+    assert download.content == b"fake-mri-bytes"
+    assert download.headers["content-type"].startswith("application/octet-stream")
+    assert download.headers["content-disposition"] == 'inline; filename="joaquim-silva-mri.nii.gz"'

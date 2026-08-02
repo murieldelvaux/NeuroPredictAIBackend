@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     checkpoint_path: str = "checkpoints/best_model.pth"
     num_classes: int = 3
     spatial_size: int = 128
+    mri_storage_dir: str = "storage/mri"
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     log_level: str = "info"
     database_url: str = "sqlite+aiosqlite:///./neuropredict.db"
