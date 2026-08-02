@@ -115,11 +115,13 @@ _seed_patients = [
             "biomarkers": ["abeta42_low", "tau_high"],
             "symptoms": ["memory_loss", "disorientation"],
             "medications": ["donepezil", "losartan"],
-            "mri_file": {
-                "filename": "pat-01-mri.nii.gz",
-                "content_type": "application/gzip",
-                "size": 15,
-            },
+            "mri_file": [
+                {
+                    "filename": "pat-01-mri.nii.gz",
+                    "content_type": "application/gzip",
+                    "size": 15,
+                }
+            ],
             "comorbidities": ["hypertension"],
             "family_history": True,
             "education_years": 12,
@@ -139,11 +141,13 @@ _seed_patients = [
             "biomarkers": ["abeta42_normal", "ptau_normal"],
             "symptoms": ["mild_forgetfulness"],
             "medications": ["atorvastatin"],
-            "mri_file": {
-                "filename": "pat-02-mri.nii.gz",
-                "content_type": "application/gzip",
-                "size": 15,
-            },
+            "mri_file": [
+                {
+                    "filename": "pat-02-mri.nii.gz",
+                    "content_type": "application/gzip",
+                    "size": 15,
+                }
+            ],
             "comorbidities": [],
             "family_history": False,
             "education_years": 16,
@@ -163,11 +167,13 @@ _seed_patients = [
             "biomarkers": ["tau_very_high", "hippocampal_atrophy"],
             "symptoms": ["memory_loss", "language_difficulty", "apathy"],
             "medications": ["memantine", "sertraline", "metformin"],
-            "mri_file": {
-                "filename": "pat-03-mri.nii.gz",
-                "content_type": "application/gzip",
-                "size": 15,
-            },
+            "mri_file": [
+                {
+                    "filename": "pat-03-mri.nii.gz",
+                    "content_type": "application/gzip",
+                    "size": 15,
+                }
+            ],
             "comorbidities": ["diabetes", "depression"],
             "family_history": True,
             "education_years": 8,
@@ -183,8 +189,8 @@ def _mri_storage_root() -> Path:
     return Path(settings.mri_storage_dir)
 
 
-def _mri_file_url(patient_id: str) -> str:
-    return f"/patients/{patient_id}/mri-file"
+def _mri_file_url(patient_id: str, filename: str) -> str:
+    return f"/patients/{patient_id}/{filename}"
 
 
 def _safe_filename(filename: Optional[str]) -> str:
@@ -199,23 +205,35 @@ def _patient_mri_file_path(patient_id: str, filename: Optional[str]) -> Path:
 
 async def store_patient_mri_file(patient_id: str, uploaded_file) -> MRIFile:
     file_bytes = await uploaded_file.read()
-    file_path = _patient_mri_file_path(patient_id, uploaded_file.filename)
+    safe_name = _safe_filename(uploaded_file.filename)
+    file_path = _patient_mri_file_path(patient_id, safe_name)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_bytes(file_bytes)
 
     return MRIFile(
-        filename=_safe_filename(uploaded_file.filename),
+        filename=safe_name,
         content_type=uploaded_file.content_type,
         size=len(file_bytes),
-        url=_mri_file_url(patient_id),
+        url=_mri_file_url(patient_id, safe_name),
     )
+
+
+def _normalize_mri_files(mri_value) -> List[dict]:
+    if isinstance(mri_value, list):
+        return [item for item in mri_value if isinstance(item, dict)]
+    if isinstance(mri_value, dict):
+        return [mri_value]
+    return []
 
 
 def _patient_to_schema(record: PatientRecord) -> Patient:
     clinical_data = dict(record.clinical_data or {})
-    mri_file = clinical_data.get("mri_file")
-    if isinstance(mri_file, dict) and mri_file.get("filename") and not mri_file.get("url"):
-        mri_file["url"] = _mri_file_url(record.id)
+    mri_files = _normalize_mri_files(clinical_data.get("mri_file"))
+    for file_meta in mri_files:
+        filename = file_meta.get("filename")
+        if filename and not file_meta.get("url"):
+            file_meta["url"] = _mri_file_url(record.id, filename)
+    clinical_data["mri_file"] = mri_files
 
     return Patient(
         id=record.id,
@@ -224,7 +242,7 @@ def _patient_to_schema(record: PatientRecord) -> Patient:
         sex=record.sex,
         date_of_birth=record.date_of_birth,
         clinical_data=clinical_data,
-        mri_file=MRIFile(**mri_file) if isinstance(mri_file, dict) else None,
+        mri_file=[MRIFile(**item) for item in mri_files],
         created_at=record.created_at.isoformat(),
         last_prediction=record.last_prediction,
     )
@@ -336,6 +354,26 @@ async def create_patient(patient: Patient) -> Patient:
         await session.commit()
         await session.refresh(record)
         return _patient_to_schema(record)
+
+
+async def add_patient_mri_file(patient_id: str, uploaded_file) -> MRIFile:
+    await init_db()
+    mri_meta = await store_patient_mri_file(patient_id, uploaded_file)
+
+    async with async_session_maker() as session:
+        patient = await session.get(PatientRecord, patient_id)
+        if not patient:
+            raise ValueError(f"Patient {patient_id} not found")
+
+        clinical_data = dict(patient.clinical_data or {})
+        mri_files = _normalize_mri_files(clinical_data.get("mri_file"))
+        mri_files.append(mri_meta.model_dump(mode="json"))
+        clinical_data["mri_file"] = mri_files
+        patient.clinical_data = clinical_data
+
+        await session.commit()
+
+    return mri_meta
 
 
 async def save_prediction(patient_id: str, prediction: dict):
