@@ -14,7 +14,7 @@ class ClinicalData(BaseModel):
     biomarkers: List[str] = Field(default_factory=list, description="Lista de biomarcadores")
     symptoms: List[str] = Field(default_factory=list, description="Lista de sintomas atuais")
     medications: List[str] = Field(default_factory=list, description="Lista de medicamentos em uso")
-    mri_file: Optional["MRIFile"] = Field(None, description="Metadados e link do arquivo de MRI")
+    mri_file: List["MRIFile"] = Field(default_factory=list, description="Lista de arquivos de MRI")
     comorbidities: List[str] = Field(default_factory=list)
     family_history: Optional[bool] = None
     education_years: Optional[int] = None
@@ -33,7 +33,7 @@ class PatientCreate(BaseModel):
     sex: str = Field(..., pattern="^[MF]$")
     date_of_birth: Optional[date] = None
     clinical_data: ClinicalData
-    mri_file: Optional[MRIFile] = None
+    mri_file: List[MRIFile] = Field(default_factory=list)
 
 
 class Patient(PatientCreate):
@@ -98,7 +98,7 @@ class PatientResponse(Patient):
         # Mantém uma cópia top-level para compatibilidade com o frontend
         clinical_data = data.get("clinical_data")
         if isinstance(clinical_data, dict):
-            data["mri_file"] = clinical_data.get("mri_file")
+            data["mri_file"] = clinical_data.get("mri_file", [])
 
         return data
 

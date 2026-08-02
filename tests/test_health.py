@@ -39,8 +39,8 @@ async def test_get_patient_detail():
     assert body["patient"]["date_of_birth"] == "14/03/1950"
     assert body["patient"]["created_at"]
     assert "/" in body["patient"]["created_at"]
-    assert body["patient"]["clinical_data"]["mri_file"]["filename"] == "pat-01-mri.nii.gz"
-    assert body["patient"]["mri_file"]["url"].endswith("/patients/pat-01/mri-file")
+    assert body["patient"]["clinical_data"]["mri_file"][0]["filename"] == "pat-01-mri.nii.gz"
+    assert body["patient"]["mri_file"][0]["url"] == "/patients/pat-01/pat-01-mri.nii.gz"
 
 
 @pytest.mark.asyncio
@@ -113,16 +113,30 @@ def test_create_patient_with_mri_upload(tmp_path, monkeypatch):
 
     assert resp.status_code == 201
     body = resp.json()
-    assert body["clinical_data"]["mri_file"]["url"] == f"http://testserver/patients/{body['id']}/mri-file"
+    assert body["clinical_data"]["mri_file"][0]["url"] == f"/patients/{body['id']}/joaquim-silva-mri.nii.gz"
     assert body["name"] == "Joaquim Silva"
     assert body["clinical_data"]["mmse"] == 19
     assert body["clinical_data"]["biomarkers"][0] == "ApoE4 positive (e3/e4)"
-    assert body["clinical_data"]["mri_file"]["filename"] == "joaquim-silva-mri.nii.gz"
-    assert body["clinical_data"]["mri_file"]["size"] == len(b"fake-mri-bytes")
-    assert body["mri_file"]["url"] == f"http://testserver/patients/{body['id']}/mri-file"
+    assert body["clinical_data"]["mri_file"][0]["filename"] == "joaquim-silva-mri.nii.gz"
+    assert body["clinical_data"]["mri_file"][0]["size"] == len(b"fake-mri-bytes")
+    assert body["mri_file"][0]["url"] == f"/patients/{body['id']}/joaquim-silva-mri.nii.gz"
 
-    download = client.get(body["mri_file"]["url"])
+    download = client.get(body["mri_file"][0]["url"])
     assert download.status_code == 200
     assert download.content == b"fake-mri-bytes"
     assert download.headers["content-type"].startswith("application/octet-stream")
     assert download.headers["content-disposition"] == 'inline; filename="joaquim-silva-mri.nii.gz"'
+
+    update = client.post(
+        f"/patients/{body['id']}/mri-file",
+        files={"mri_file": ("second.nii.gz", b"second-bytes", "application/gzip")},
+    )
+    assert update.status_code == 200
+    update_body = update.json()
+    assert update_body["filename"] == "second.nii.gz"
+    assert update_body["url"] == f"/patients/{body['id']}/second.nii.gz"
+
+    detail = client.get(f"/patients/{body['id']}")
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert len(detail_body["patient"]["mri_file"]) == 2

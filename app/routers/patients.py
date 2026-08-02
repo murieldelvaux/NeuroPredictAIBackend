@@ -4,28 +4,37 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
-from app.schemas.patient import ClinicalData, Patient, PatientDetail, PatientResponse
-from app.db.in_memory import list_patients, get_patient, create_patient, store_patient_mri_file, _patient_mri_file_path
+from app.schemas.patient import ClinicalData, MRIFile, Patient, PatientDetail, PatientResponse
+from app.db.in_memory import list_patients, get_patient, create_patient, store_patient_mri_file, add_patient_mri_file, _patient_mri_file_path
 
 router = APIRouter()
 
 
 def _attach_absolute_mri_url(patient: Patient, request: Request) -> Patient:
     clinical_data = patient.clinical_data
-    absolute_url = str(request.url_for("download_patient_mri_file", patient_id=patient.id))
+    def _relative_file_url(file_name: str) -> str:
+        return f"/patients/{patient.id}/{file_name}"
 
     if isinstance(clinical_data, dict):
-        mri_file = clinical_data.get("mri_file")
-        if isinstance(mri_file, dict) and mri_file.get("filename"):
-            mri_file["url"] = absolute_url
+        mri_files = clinical_data.get("mri_file")
+        if isinstance(mri_files, list):
+            for item in mri_files:
+                if isinstance(item, dict) and item.get("filename"):
+                    item["url"] = _relative_file_url(item["filename"])
     elif hasattr(clinical_data, "mri_file"):
-        mri_file = clinical_data.mri_file
-        if mri_file is not None:
-            if isinstance(mri_file, dict):
-                if mri_file.get("filename"):
-                    mri_file["url"] = absolute_url
-            elif hasattr(mri_file, "url") and getattr(mri_file, "filename", None):
-                mri_file.url = absolute_url
+        mri_files = clinical_data.mri_file
+        if isinstance(mri_files, list):
+            for item in mri_files:
+                if isinstance(item, dict) and item.get("filename"):
+                    item["url"] = _relative_file_url(item["filename"])
+                elif hasattr(item, "filename") and item.filename:
+                    item.url = _relative_file_url(item.filename)
+
+    if isinstance(patient.mri_file, list):
+        for item in patient.mri_file:
+            if item.filename:
+                item.url = _relative_file_url(item.filename)
+
     return patient
 
 
@@ -42,12 +51,7 @@ async def get_patient_detail(patient_id: str, request: Request):
     detail = await get_patient(patient_id)
     if not detail:
         raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
-    patient = detail.patient
-    clinical_data = patient.clinical_data
-    if isinstance(clinical_data, dict):
-        mri_file = clinical_data.get("mri_file")
-        if isinstance(mri_file, dict) and mri_file.get("filename"):
-            mri_file["url"] = str(request.url_for("download_patient_mri_file", patient_id=patient_id))
+    _attach_absolute_mri_url(detail.patient, request)
     return detail
 
 
@@ -73,22 +77,36 @@ async def create_new_patient(
     )
 
     if mri_file is not None:
-        clinical_data_payload.mri_file = await store_patient_mri_file(patient.id, mri_file)
-        patient.mri_file = clinical_data_payload.mri_file
+        created_mri = await store_patient_mri_file(patient.id, mri_file)
+        clinical_data_payload.mri_file = [created_mri]
+        patient.mri_file = [created_mri]
 
     created_patient = await create_patient(patient)
     return _attach_absolute_mri_url(created_patient, request)
 
 
-@router.get("/{patient_id}/mri-file")
-async def download_patient_mri_file(patient_id: str):
+@router.post("/{patient_id}/mri-file", response_model=MRIFile)
+async def update_patient_mri_file(
+    patient_id: str,
+    mri_file: UploadFile = File(...),
+):
+    """Adiciona um novo MRI ao paciente e mantém histórico dos arquivos."""
+
+    try:
+        return await add_patient_mri_file(patient_id, mri_file)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{patient_id}/{filename}", name="download_patient_mri_file")
+async def download_patient_mri_file(patient_id: str, filename: str):
     """Retorna o MRI salvo do paciente para consumo direto pelo frontend/NiiVue."""
 
     detail = await get_patient(patient_id)
-    if not detail or not detail.patient.clinical_data.mri_file:
+    if not detail:
         raise HTTPException(status_code=404, detail=f"MRI file for patient {patient_id} not found")
 
-    file_path = _patient_mri_file_path(patient_id, detail.patient.clinical_data.mri_file.filename)
+    file_path = _patient_mri_file_path(patient_id, filename)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"MRI file for patient {patient_id} not found")
 
