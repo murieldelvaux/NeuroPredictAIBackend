@@ -4,8 +4,25 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
-from app.schemas.patient import ClinicalData, MRIFile, Patient, PatientDetail, PatientResponse
-from app.db.in_memory import list_patients, get_patient, create_patient, store_patient_mri_file, add_patient_mri_file, _patient_mri_file_path
+from app.schemas.patient import (
+    ClinicalData,
+    ClinicalDataUpdate,
+    DiagnosisValidationRequest,
+    MRIFile,
+    Patient,
+    PatientDetail,
+    PatientResponse,
+)
+from app.db.in_memory import (
+    list_patients,
+    get_patient,
+    create_patient,
+    store_patient_mri_file,
+    add_patient_mri_file,
+    update_patient_clinical_data,
+    validate_patient_diagnosis,
+    _patient_mri_file_path,
+)
 
 router = APIRouter()
 
@@ -83,6 +100,40 @@ async def create_new_patient(
 
     created_patient = await create_patient(patient)
     return _attach_absolute_mri_url(created_patient, request)
+
+
+@router.patch("/{patient_id}/clinical-data", response_model=PatientResponse)
+async def update_clinical_data(
+    patient_id: str,
+    update_data: ClinicalDataUpdate,
+    request: Request,
+):
+    """
+    Atualiza dados clínicos do paciente (MMSE, MoCA, CDR, sintomas, comorbidades).
+    Se assessment_date for informada, adiciona a avaliação ao histórico de evolução cognitiva.
+    """
+    try:
+        updated = await update_patient_clinical_data(patient_id, update_data)
+        return _attach_absolute_mri_url(updated, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{patient_id}/validate-diagnosis", response_model=PatientResponse)
+async def validate_diagnosis(
+    patient_id: str,
+    payload: DiagnosisValidationRequest,
+    request: Request,
+):
+    """
+    Valida o diagnóstico clínico do paciente como CN, MCI ou DEM.
+    Salva a confirmação médica e integra o exame validado no dataset de treino.
+    """
+    try:
+        updated = await validate_patient_diagnosis(patient_id, payload.diagnosis, payload.notes)
+        return _attach_absolute_mri_url(updated, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{patient_id}/mri-file", response_model=MRIFile)

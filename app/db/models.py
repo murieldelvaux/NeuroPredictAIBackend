@@ -23,6 +23,8 @@ class PatientRecord(Base):
     clinical_data: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     last_prediction: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    validated_diagnosis: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     predictions: Mapped[List["PredictionRecord"]] = relationship(
         back_populates="patient",
