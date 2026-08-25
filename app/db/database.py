@@ -27,13 +27,15 @@ def _get_connect_args(url: str) -> dict:
     return {}
 
 
-# Troque o engine atual por esse
+from sqlalchemy.pool import NullPool
+
+# Engine com NullPool (ideal para Neon Postgres serverless pooler e conexões asyncpg)
 engine = create_async_engine(
     get_database_url(),
     echo=settings.database_echo,
     future=True,
     connect_args=_get_connect_args(get_database_url()),
-    pool_pre_ping=True,
+    poolclass=NullPool,
 )
 
 

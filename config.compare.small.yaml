@@ -1,0 +1,44 @@
+data:
+  unified_metadata: data/oasis/oasis_merged_train_balanced_small.csv
+  splits: data/oasis/splits.json
+  adni_raw: data/adni/raw
+  oasis_raw: data/oasis/raw
+training:
+  batch_size: 2
+  epochs: 5
+  learning_rate: 0.0001
+  num_workers: 0
+  device: cpu
+  focal_gamma: 2.0
+  class_weight_beta: 0.999
+  use_weighted_sampler: true
+  use_loss_weights_with_sampler: false
+  confidence_quantile: 0.15
+  ood_fit_samples: 256
+model:
+  architecture: resnet3d
+  num_classes: 3
+  input_channels: 1
+  spatial_size:
+  - 128
+  - 128
+  - 128
+preprocessing:
+  spacing:
+  - 2.0
+  - 2.0
+  - 2.0
+  intensity_range:
+  - 0
+  - 3000
+  normalized_range:
+  - 0.0
+  - 1.0
+  spatial_size:
+  - 128
+  - 128
+  - 128
+class_weights:
+  CN: 1.0
+  MCI: 8.0
+  DEM: 4.0
