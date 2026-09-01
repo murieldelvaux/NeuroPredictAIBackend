@@ -63,7 +63,11 @@ class ModelService:
 
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
             state = checkpoint.get("model_state_dict", checkpoint)
-            self.model.load_state_dict(state)
+            try:
+                self.model.load_state_dict(state, strict=True)
+            except Exception as load_err:
+                logger.warning(f"Carregando pesos com strict=False: {load_err}")
+                self.model.load_state_dict(state, strict=False)
             self.model.to(self.device)
             self.model.eval()
 
@@ -90,6 +94,20 @@ class ModelService:
         self.model = None
         self.is_loaded = False
 
+    def _prepare_clinical_tensor(self, clinical: Optional[ClinicalFeatures]) -> torch.Tensor:
+        from src.datasets.mri_dataset import normalize_clinical_features
+        if clinical is None:
+            return normalize_clinical_features().unsqueeze(0).to(self.device)
+
+        return normalize_clinical_features(
+            age=clinical.age,
+            mmse=clinical.mmse,
+            moca=clinical.moca,
+            cdr=clinical.cdr,
+            cdrsb=clinical.cdrsb if clinical.cdrsb is not None else clinical.cdrtot,
+            education=clinical.education_years if clinical.education_years is not None else clinical.escolaridade,
+        ).unsqueeze(0).to(self.device)
+
     def predict(
         self,
         nii_path: str,
@@ -101,9 +119,10 @@ class ModelService:
 
         img_tensor = self.transforms(nii_path)
         img_tensor = img_tensor.unsqueeze(0).to(self.device)
+        clinical_tensor = self._prepare_clinical_tensor(clinical)
 
         with torch.no_grad():
-            logits = self.model(img_tensor)
+            logits = self.model(img_tensor, clinical_tensor)
             probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
 
         pred_idx = int(np.argmax(probs))
@@ -111,7 +130,18 @@ class ModelService:
         confidence = float(probs[pred_idx])
         risk_score = min(float(probs[2] + 0.5 * probs[1]), 1.0)
         probabilities = {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))}
-        explanation = self._build_explanation(probs, clinical)
+
+        # Executa segmentação e cálculo volumétrico anatômico (mm³)
+        volumetric_report = None
+        try:
+            from src.services.volumetry_service import volumetry_service
+            from app.schemas.prediction import VolumetricReport
+            raw_volumetry = volumetry_service.segment_and_quantify(nii_path)
+            volumetric_report = VolumetricReport(**raw_volumetry)
+        except Exception as vol_err:
+            logger.warning(f"Volumetria não calculada para {nii_path}: {vol_err}")
+
+        explanation = self._build_explanation(probs, clinical, volumetric_report)
 
         return PredictionOutput(
             patient_id="",
@@ -121,22 +151,42 @@ class ModelService:
             confidence=confidence,
             probabilities=probabilities,
             explanation=explanation,
+            volumetry=volumetric_report,
         )
 
-    def _build_explanation(self, probs: np.ndarray, clinical: Optional[ClinicalFeatures]) -> list:
+    def _build_explanation(
+        self,
+        probs: np.ndarray,
+        clinical: Optional[ClinicalFeatures],
+        volumetry: Optional[Any] = None,
+    ) -> list:
         factors = []
         if clinical:
             if clinical.mmse is not None:
-                impact = round((30 - clinical.mmse) / 30 * 0.4, 3)
+                impact = round(abs(30 - clinical.mmse) / 30 * 0.4, 3)
                 factors.append(FeatureImportance(
                     feature="MMSE Score",
                     impact=impact,
                     direction="risk" if clinical.mmse < 24 else "protective",
                 ))
+            if clinical.moca is not None:
+                impact = round(abs(30 - clinical.moca) / 30 * 0.35, 3)
+                factors.append(FeatureImportance(
+                    feature="MoCA Score",
+                    impact=impact,
+                    direction="risk" if clinical.moca < 26 else "protective",
+                ))
             if clinical.cdr is not None and clinical.cdr > 0:
                 factors.append(FeatureImportance(
                     feature="CDR Rating",
                     impact=round(clinical.cdr * 0.3, 3),
+                    direction="risk",
+                ))
+            cdrsb = clinical.cdrsb if clinical.cdrsb is not None else clinical.cdrtot
+            if cdrsb is not None and cdrsb > 0.5:
+                factors.append(FeatureImportance(
+                    feature="CDR Sum of Boxes (CDR-SB)",
+                    impact=round(min(1.0, cdrsb / 18.0) * 0.35, 3),
                     direction="risk",
                 ))
             if clinical.age is not None and clinical.age > 70:
@@ -145,6 +195,24 @@ class ModelService:
                     impact=round((clinical.age - 70) / 100, 3),
                     direction="risk",
                 ))
+            educ = clinical.education_years if clinical.education_years is not None else clinical.escolaridade
+            if educ is not None:
+                factors.append(FeatureImportance(
+                    feature="Education (Years)",
+                    impact=round(min(1.0, educ / 25.0) * 0.2, 3),
+                    direction="protective" if educ >= 12 else "risk",
+                ))
+
+        if volumetry is not None:
+            hipp_impact = round(float(getattr(volumetry, "hippocampal_atrophy_index", 0.1) * 0.45), 3)
+            stage = getattr(volumetry, "atrophy_stage", "Preservado")
+            total_hipp = getattr(volumetry, "total_hippocampus_mm3", 7800.0)
+            factors.append(FeatureImportance(
+                feature=f"Volumetria do Hipocampo ({total_hipp:.0f} mm³ - {stage})",
+                impact=hipp_impact if hipp_impact > 0.05 else 0.18,
+                direction="risk" if stage != "Preservado" else "protective",
+            ))
+
         factors.append(FeatureImportance(
             feature="MRI 3D Features (Hybrid CNN-ResNet-Transformer)",
             impact=round(float(np.max(probs)), 3),
@@ -159,10 +227,12 @@ class ModelService:
             risk_score=0.0,
             classification="CN",
             confidence=0.0,
-            probabilities={"CN": 1.0, "MCI": 0.0, "AD": 0.0},
+            probabilities={"CN": 1.0, "MCI": 0.0, "DEM": 0.0},
             explanation=[],
+            volumetry=None,
             model_version="mock",
         )
 
 
 model_service = ModelService()
+

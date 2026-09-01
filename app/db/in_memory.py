@@ -7,6 +7,7 @@ import asyncio
 import logging
 import pandas as pd
 
+# pyrefly: ignore [missing-import]
 from sqlalchemy import select, func, delete, text
 
 from app.core.config import settings
@@ -361,6 +362,17 @@ async def get_patient(patient_id: str) -> Optional[PatientDetail]:
         )
 
 
+def _normalize_date_str(raw_date: Optional[str]) -> str:
+    """Padroniza datas para o formato DD/MM/AAAA."""
+    if not raw_date:
+        return date.today().strftime("%d/%m/%Y")
+    s = str(raw_date).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        parts = s[:10].split("-")
+        return f"{parts[2]}/{parts[1]}/{parts[0]}"
+    return s
+
+
 async def create_patient(patient: Patient) -> Patient:
     await init_db()
     async with async_session_maker() as session:
@@ -368,13 +380,25 @@ async def create_patient(patient: Patient) -> Patient:
         if existing:
             raise ValueError(f"Patient {patient.id} already exists")
 
+        c_dict = _clinical_data_to_dict(patient.clinical_data) or {}
+        # Se não houver histórico cognitivo explícito mas houver scores iniciais, cria o primeiro ponto
+        if not c_dict.get("cognitive_history") and any(c_dict.get(k) is not None for k in ["mmse", "moca", "cdr", "cdrtot"]):
+            c_dict["cognitive_history"] = [{
+                "date": date.today().strftime("%d/%m/%Y"),
+                "mmse": c_dict.get("mmse"),
+                "moca": c_dict.get("moca"),
+                "cdr": c_dict.get("cdr"),
+                "cdrtot": c_dict.get("cdrtot"),
+                "notes": "Avaliação inicial",
+            }]
+
         record = PatientRecord(
             id=patient.id,
             name=patient.name,
             age=patient.age,
             sex=patient.sex,
             date_of_birth=patient.date_of_birth,
-            clinical_data=_clinical_data_to_dict(patient.clinical_data),
+            clinical_data=c_dict,
             created_at=datetime.now(),
             last_prediction=patient.last_prediction,
             validated_diagnosis=patient.validated_diagnosis,
@@ -387,7 +411,7 @@ async def create_patient(patient: Patient) -> Patient:
 
 
 async def update_patient_clinical_data(patient_id: str, update: ClinicalDataUpdate) -> Patient:
-    """Atualiza dados clínicos e insere nova avaliação no histórico cognitivo."""
+    """Atualiza dados clínicos e agrega a nova avaliação ao histórico cognitivo longitudinal."""
     await init_db()
     async with async_session_maker() as session:
         patient = await session.get(PatientRecord, patient_id)
@@ -396,7 +420,7 @@ async def update_patient_clinical_data(patient_id: str, update: ClinicalDataUpda
 
         clinical = dict(patient.clinical_data or {})
 
-        # Atualiza campos cognitivos diretos se fornecidos
+        # Atualiza campos clínicos diretos
         if update.mmse is not None:
             clinical["mmse"] = update.mmse
         if update.moca is not None:
@@ -418,24 +442,65 @@ async def update_patient_clinical_data(patient_id: str, update: ClinicalDataUpda
         if update.education_years is not None:
             clinical["education_years"] = update.education_years
 
-        # Se houver data de avaliação, insere no histórico de evolução temporal
-        if update.assessment_date:
-            cog_history = list(clinical.get("cognitive_history", []))
-            new_assessment = {
-                "date": update.assessment_date,
-                "mmse": update.mmse,
-                "moca": update.moca,
-                "cdr": update.cdr,
-                "cdrtot": update.cdrtot,
-                "notes": update.notes,
+        # Recupera histórico cognitivo existente preservando todos os registros anteriores
+        raw_history = list(clinical.get("cognitive_history") or [])
+        cog_history = [dict(item) if isinstance(item, dict) else item.model_dump() for item in raw_history]
+
+        assessment_date = _normalize_date_str(update.assessment_date)
+
+        # Se houver scores cognitivos enviados, agrega ao histórico de evolução
+        has_cog_update = any([
+            update.mmse is not None,
+            update.moca is not None,
+            update.cdr is not None,
+            update.cdrtot is not None,
+            update.notes is not None,
+            update.assessment_date is not None,
+        ])
+
+        if has_cog_update:
+            new_entry = {
+                "date": assessment_date,
+                "mmse": float(update.mmse) if update.mmse is not None else clinical.get("mmse"),
+                "moca": float(update.moca) if update.moca is not None else clinical.get("moca"),
+                "cdr": float(update.cdr) if update.cdr is not None else clinical.get("cdr"),
+                "cdrtot": float(update.cdrtot) if update.cdrtot is not None else clinical.get("cdrtot"),
+                "notes": update.notes or "Consulta de acompanhamento",
             }
-            cog_history.append(new_assessment)
+
+            # Procura se já existe avaliação para exatamente a mesma data para atualizar, senão adiciona
+            found_idx = None
+            for idx, item in enumerate(cog_history):
+                if _normalize_date_str(item.get("date")) == assessment_date:
+                    found_idx = idx
+                    break
+
+            if found_idx is not None:
+                for k, v in new_entry.items():
+                    if v is not None:
+                        cog_history[found_idx][k] = v
+            else:
+                cog_history.append(new_entry)
+
+            # Ordenação cronológica estável por data
+            def _date_sort_key(entry):
+                d_str = _normalize_date_str(entry.get("date", ""))
+                try:
+                    parts = d_str.split("/")
+                    if len(parts) == 3:
+                        return (int(parts[2]), int(parts[1]), int(parts[0]))
+                except Exception:
+                    pass
+                return (9999, 12, 31)
+
+            cog_history.sort(key=_date_sort_key)
             clinical["cognitive_history"] = cog_history
 
         patient.clinical_data = clinical
         await session.commit()
         await session.refresh(patient)
         return _patient_to_schema(patient)
+
 
 
 async def validate_patient_diagnosis(patient_id: str, diagnosis: str, notes: Optional[str] = None) -> Patient:
@@ -476,15 +541,35 @@ def _integrate_feedback_into_training(patient_id: str, diagnosis: str, clinical_
         return
 
     mri_path = str(_patient_mri_file_path(patient_id, filename))
+    if not Path(mri_path).exists():
+        logger.info(f"Exame MRI {mri_path} não encontrado fisicamente no disco. Ignorando inclusão no dataset de treino.")
+        return
+
     label_map = {"CN": 0, "MCI": 1, "DEM": 2}
     label_id = label_map.get(diagnosis, 0)
 
     try:
         df = pd.read_csv(csv_file)
+        c_dict = dict(clinical_data or {})
+        
+        age_val = float(c_dict.get("age", 70.0)) if c_dict.get("age") is not None else 70.0
+        mmse_val = float(c_dict.get("mmse", 28.0)) if c_dict.get("mmse") is not None else (29.0 if label_id == 0 else (24.0 if label_id == 1 else 18.0))
+        moca_val = float(c_dict.get("moca", round(min(30.0, max(0.0, 0.88 * mmse_val + 1.1)), 1))) if c_dict.get("moca") is not None else round(min(30.0, max(0.0, 0.88 * mmse_val + 1.1)), 1)
+        cdr_val = float(c_dict.get("cdr", 0.0 if label_id == 0 else (0.5 if label_id == 1 else 1.0))) if c_dict.get("cdr") is not None else (0.0 if label_id == 0 else (0.5 if label_id == 1 else 1.0))
+        cdrsb_val = float(c_dict.get("cdrtot", cdr_val * 2.5)) if c_dict.get("cdrtot") is not None else (cdr_val * 2.5)
+        educ_val = float(c_dict.get("education_years", 16.0)) if c_dict.get("education_years") is not None else 16.0
+
         if mri_path in df["image"].values:
             df.loc[df["image"] == mri_path, "label_name"] = diagnosis
             df.loc[df["image"] == mri_path, "label_id"] = label_id
             df.loc[df["image"] == mri_path, "split"] = "train"
+            df.loc[df["image"] == mri_path, "AGE"] = age_val
+            df.loc[df["image"] == mri_path, "MMSE"] = mmse_val
+            df.loc[df["image"] == mri_path, "MOCA"] = moca_val
+            df.loc[df["image"] == mri_path, "CDR"] = cdr_val
+            df.loc[df["image"] == mri_path, "CDRSB"] = cdrsb_val
+            df.loc[df["image"] == mri_path, "EDUC"] = educ_val
+            df.loc[df["image"] == mri_path, "CDRTOT"] = cdr_val
         else:
             new_row = {
                 "image": mri_path,
@@ -492,6 +577,13 @@ def _integrate_feedback_into_training(patient_id: str, diagnosis: str, clinical_
                 "label_name": diagnosis,
                 "PTID": patient_id,
                 "split": "train",
+                "AGE": age_val,
+                "MMSE": mmse_val,
+                "MOCA": moca_val,
+                "CDR": cdr_val,
+                "CDRSB": cdrsb_val,
+                "EDUC": educ_val,
+                "CDRTOT": cdr_val,
                 "source": "CLINICAL_FEEDBACK",
             }
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -499,6 +591,7 @@ def _integrate_feedback_into_training(patient_id: str, diagnosis: str, clinical_
         logger.info(f"Feedback integrado ao dataset para o paciente {patient_id}: {diagnosis}")
     except Exception as e:
         logger.error(f"Erro ao integrar feedback no dataset: {e}")
+
 
 
 async def add_patient_mri_file(patient_id: str, uploaded_file) -> MRIFile:

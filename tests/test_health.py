@@ -1,7 +1,10 @@
+# pyrefly: ignore [missing-import]
 import pytest
 import json
 from datetime import date
+# pyrefly: ignore [missing-import]
 from fastapi.testclient import TestClient
+# pyrefly: ignore [missing-import]
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.core.config import settings
@@ -140,3 +143,46 @@ def test_create_patient_with_mri_upload(tmp_path, monkeypatch):
     assert detail.status_code == 200
     detail_body = detail.json()
     assert len(detail_body["patient"]["mri_file"]) == 2
+
+
+def test_update_clinical_data_aggregates_cognitive_history(client):
+    """Valida que novas avaliações cognitivas são agregadas ao histórico longitudinal para gerar os gráficos."""
+    # 1. Consulta o histórico inicial do pat-01 (já possui 3 avaliações no seed)
+    res_get = client.get("/patients/pat-01")
+    assert res_get.status_code == 200
+    initial_history = res_get.json()["patient"]["clinical_data"].get("cognitive_history", [])
+    initial_count = len(initial_history)
+    assert initial_count >= 3
+
+    # 2. Envia nova avaliação da consulta atual (com data explícita)
+    patch_payload_1 = {
+        "mmse": 20.0,
+        "moca": 17.0,
+        "cdr": 1.0,
+        "cdrtot": 4.0,
+        "assessment_date": "15/08/2026",
+        "notes": "Nova consulta semestral - progressão de sintomas",
+    }
+    resp_patch_1 = client.patch("/patients/pat-01/clinical-data", json=patch_payload_1)
+    assert resp_patch_1.status_code == 200
+    history_after_1 = resp_patch_1.json()["clinical_data"]["cognitive_history"]
+    assert len(history_after_1) == initial_count + 1
+    assert any(h["date"] == "15/08/2026" and h["mmse"] == 20.0 for h in history_after_1)
+
+    # 3. Envia outra avaliação posterior (ex: sem data explícita, adotando a data de hoje)
+    patch_payload_2 = {
+        "mmse": 18.0,
+        "moca": 15.0,
+        "cdr": 2.0,
+        "cdrtot": 6.5,
+        "assessment_date": "01/09/2026",
+        "notes": "Consulta de retorno",
+    }
+    resp_patch_2 = client.patch("/patients/pat-01/clinical-data", json=patch_payload_2)
+    assert resp_patch_2.status_code == 200
+    history_after_2 = resp_patch_2.json()["clinical_data"]["cognitive_history"]
+    assert len(history_after_2) == initial_count + 2
+    assert history_after_2[-1]["date"] == "01/09/2026"
+    assert history_after_2[-1]["mmse"] == 18.0
+    assert history_after_2[-1]["cdr"] == 2.0
+

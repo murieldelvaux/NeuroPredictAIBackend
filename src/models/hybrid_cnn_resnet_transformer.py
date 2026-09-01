@@ -76,10 +76,12 @@ class ResidualBlock3D(nn.Module):
 
 class HybridCNNResNetTransformer3D(nn.Module):
     """
-    Arquitetura Híbrida 3D: CNN Stem + ResNet Backbone + Vision Transformer + Grad-CAM.
+    Arquitetura Híbrida 3D com Fusão Multimodal Tardia (Late Fusion):
+    CNN Stem + ResNet Backbone + Vision Transformer + MLP Tabular Clínico + Grad-CAM.
     
     Projetada para classificação multi-classe de Alzheimer em volumes MRI T1 3D
-    (CN: 0, MCI: 1, DEM: 2) a partir de tensores de entrada (B, 1, 128, 128, 128).
+    (CN: 0, MCI: 1, DEM: 2) a partir de tensores de imagem (B, 1, 128, 128, 128)
+    e variáveis clínicas tabulares (Idade, MMSE, MoCA, CDR, CDR-SB, Escolaridade) (B, 6).
 
     Fluxo Arquitetural:
       1. Stem Convolucional 3D (128³ -> 64³): extrai features locais de baixo nível via Conv strided.
@@ -89,12 +91,15 @@ class HybridCNNResNetTransformer3D(nn.Module):
          Converte os 8x8x8 = 512 voxels em sequência de 512 tokens (+ 1 CLS token = 513 tokens).
       4. Transformer Encoder:
          Aplica blocos de Self-Attention Multi-Head (Pre-LayerNorm) para modelar
-         correlações espaciais globais de longo alcance entre diferentes estruturas cerebrais.
-      5. Head de Classificação:
-         MLP sobre o token CLS com LayerNorm e Dropout para prever logits das 3 classes.
-      6. Compatibilidade Grad-CAM 3D:
-         Expõe a última camada convolucional `target_conv_layer` (nn.Conv3d) do backbone
-         para registro de hooks forward/backward e geração de mapas de calor 3D interpretáveis.
+         correlações espaciais globais de longo alcance entre diferentes estruturas cerebrais (256-d).
+      5. MLP Tabular Clínico:
+         Processa o vetor de variáveis clínicas (B, 6) através de Dense(6, 64) -> BatchNorm1d(64) -> GELU()
+         para extrair uma representação semântica rica de 64 dimensões.
+      6. Fusão Tardia (Late Fusion) & Head de Classificação:
+         Concatena a representação visual do token CLS (256-d) com o vetor clínico (64-d) -> 320-d,
+         alimentando a cabeça de classificação final (320 -> 160 -> 3 classes) com Dropout e LayerNorm.
+      7. Compatibilidade Grad-CAM 3D & Fallback Seguro:
+         Expõe `target_conv_layer` para interpretabilidade e suporta `clinical=None` com fallback neutro.
     """
 
     def __init__(
@@ -109,12 +114,16 @@ class HybridCNNResNetTransformer3D(nn.Module):
         mlp_ratio: float = 4.0,
         dropout: float = 0.4,
         spatial_size: int = 128,
+        clinical_dim: int = 6,
+        clinical_hidden_dim: int = 64,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.embed_dim = embed_dim
         self.spatial_size = spatial_size
+        self.clinical_dim = clinical_dim
+        self.clinical_hidden_dim = clinical_hidden_dim
 
         # ── 1. Stem Convolucional 3D (128³ -> 64³) ────────────────────────────
         # Downsampling por stride=2 em vez de MaxPool3d (compatível com MPS Apple Silicon)
@@ -178,7 +187,7 @@ class HybridCNNResNetTransformer3D(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_tokens + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=dropout)
 
-        # ── 4. Transformer Encoder ───────────────────────────────────────────
+        # ── 4. Transformer Encoder (Vision) ───────────────────────────────────
         # Pre-LayerNorm (norm_first=True) confere maior estabilidade de convergência
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
@@ -195,13 +204,21 @@ class HybridCNNResNetTransformer3D(nn.Module):
             norm=nn.LayerNorm(embed_dim),
         )
 
-        # ── 5. Head de Classificação ──────────────────────────────────────────
+        # ── 5. MLP Tabular Clínico (6 -> 64) ──────────────────────────────────
+        self.clinical_mlp = nn.Sequential(
+            nn.Linear(clinical_dim, clinical_hidden_dim),
+            nn.BatchNorm1d(clinical_hidden_dim),
+            nn.GELU(),
+        )
+
+        # ── 6. Head de Classificação Multimodal (Late Fusion: 256 + 64 = 320 -> 3) ──
+        fused_dim = embed_dim + clinical_hidden_dim
         self.head = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, embed_dim // 2),
+            nn.LayerNorm(fused_dim),
+            nn.Linear(fused_dim, fused_dim // 2),  # 320 -> 160
             nn.GELU(),
             nn.Dropout(p=dropout),
-            nn.Linear(embed_dim // 2, num_classes),
+            nn.Linear(fused_dim // 2, num_classes),  # 160 -> 3
         )
 
         self._init_weights()
@@ -216,7 +233,7 @@ class HybridCNNResNetTransformer3D(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, (nn.BatchNorm3d, nn.LayerNorm)):
+            elif isinstance(m, (nn.BatchNorm3d, nn.BatchNorm1d, nn.LayerNorm)):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
             elif isinstance(m, nn.Linear):
@@ -263,12 +280,28 @@ class HybridCNNResNetTransformer3D(nn.Module):
         out = self.transformer_encoder(seq)
         return out
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward_clinical(self, clinical: Optional[torch.Tensor], batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Processa atributos clínicos via MLP tabular com fallback seguro para representação neutra."""
+        if clinical is None:
+            return torch.zeros(batch_size, self.clinical_hidden_dim, device=device, dtype=dtype)
+        
+        if clinical.ndim == 1:
+            clinical = clinical.unsqueeze(0)
+        
+        if clinical.size(0) == 1 and self.training:
+            # Em modo treino com batch_size=1, contorna a restrição de BatchNorm1d
+            return F.gelu(self.clinical_mlp[0](clinical))
+        
+        return self.clinical_mlp(clinical)
+
+    def forward(self, x: torch.Tensor, clinical: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass completo.
+        Forward pass multimodal com Late Fusion.
         
         Args:
             x: Tensor do volume MRI de shape (B, 1, 128, 128, 128).
+            clinical: Tensor opcional de variáveis clínicas (B, 6)
+                      [Idade, MMSE, MoCA, CDR, CDR-SB, Escolaridade].
             
         Returns:
             Logits de shape (B, num_classes) [CN, MCI, DEM].
@@ -276,7 +309,15 @@ class HybridCNNResNetTransformer3D(nn.Module):
         feat = self.extract_features(x)
         trans_out = self.forward_transformer(feat)
 
-        # Vetor global extraído do [CLS] token (índice 0)
+        # Vetor visual global extraído do [CLS] token (índice 0): (B, 256)
         cls_rep = trans_out[:, 0]
-        logits = self.head(cls_rep)
+
+        # Processamento tabular clínico: (B, 64)
+        clinical_rep = self.forward_clinical(clinical, batch_size=x.size(0), device=x.device, dtype=x.dtype)
+
+        # Fusão Tardia (Late Fusion): concatenação (B, 256 + 64 = 320)
+        fused = torch.cat((cls_rep, clinical_rep), dim=1)
+
+        # Head de Classificação final
+        logits = self.head(fused)
         return logits
