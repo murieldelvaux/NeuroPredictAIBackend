@@ -140,3 +140,72 @@ def test_create_patient_with_mri_upload(tmp_path, monkeypatch):
     assert detail.status_code == 200
     detail_body = detail.json()
     assert len(detail_body["patient"]["mri_file"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_clinical_data_aggregates_cognitive_history():
+    """Valida que novas avaliações cognitivas são agregadas ao histórico longitudinal para gerar os gráficos."""
+    from httpx import AsyncClient, ASGITransport
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        import json
+        clinical_json = json.dumps({
+            "mmse": 26.0,
+            "moca": 25.0,
+            "cdr": 0.5,
+            "cdrtot": 1.0,
+            "cognitive_history": [
+                {"date": "10/01/2026", "mmse": 26.0, "moca": 25.0, "cdr": 0.5, "cdrtot": 1.0, "notes": "Primeira consulta"}
+            ]
+        })
+        form_data = {
+            "name": "Paciente Historico Teste",
+            "age": "69",
+            "sex": "M",
+            "clinical_data": clinical_json,
+        }
+        res_create = await client.post("/patients", data=form_data)
+        assert res_create.status_code == 201
+        pid = res_create.json()["id"]
+
+
+        # 1. Envia 2ª consulta
+        resp_patch_1 = await client.patch(
+            f"/patients/{pid}/clinical-data",
+            json={
+                "mmse": 22.0,
+                "moca": 19.0,
+                "cdr": 1.0,
+                "cdrtot": 3.5,
+                "assessment_date": "15/05/2026",
+                "notes": "Segunda consulta - declínio",
+            },
+        )
+        assert resp_patch_1.status_code == 200
+        history_1 = resp_patch_1.json()["clinical_data"]["cognitive_history"]
+        assert len(history_1) == 2
+        assert history_1[0]["date"] == "10/01/2026"
+        assert history_1[1]["date"] == "15/05/2026"
+        assert history_1[1]["mmse"] == 22.0
+
+        # 2. Envia 3ª consulta
+        resp_patch_2 = await client.patch(
+            f"/patients/{pid}/clinical-data",
+            json={
+                "mmse": 18.0,
+                "moca": 15.0,
+                "cdr": 2.0,
+                "cdrtot": 6.5,
+                "assessment_date": "01/09/2026",
+                "notes": "Terceira consulta - demência",
+            },
+        )
+        assert resp_patch_2.status_code == 200
+        history_2 = resp_patch_2.json()["clinical_data"]["cognitive_history"]
+        assert len(history_2) == 3
+        assert history_2[2]["date"] == "01/09/2026"
+        assert history_2[2]["mmse"] == 18.0
+        assert history_2[2]["cdr"] == 2.0
+
+
+
