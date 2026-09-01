@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.routers import patients, prediction
+from app.routers import patients, prediction, training
 from app.services.ai_service import model_service
 from app.db.in_memory import init_db
 
@@ -33,6 +33,8 @@ app.add_middleware(
 
 app.include_router(patients.router, prefix="/patients", tags=["patients"])
 app.include_router(prediction.router, prefix="/predict", tags=["prediction"])
+app.include_router(training.router, prefix="/train", tags=["training"])
+
 
 
 @app.get("/health", tags=["health"])

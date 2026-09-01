@@ -36,13 +36,18 @@ async def predict(
     mri_file: Optional[UploadFile] = File(None),
     age: Optional[float] = Form(None),
     mmse: Optional[float] = Form(None),
+    moca: Optional[float] = Form(None),
     cdr: Optional[float] = Form(None),
     cdrtot: Optional[float] = Form(None),
+    cdrsb: Optional[float] = Form(None),
+    education_years: Optional[float] = Form(None),
+    escolaridade: Optional[float] = Form(None),
 ):
     """
-    Roda inferência 3D ResNet no MRI e retorna classificação CN/MCI/AD.
-    O arquivo .nii ou .nii.gz é obrigatório para predição completa.
-    Features clínicas são opcionais e enriquecem a explicação SHAP.
+    Executa inferência multimodal (MRI 3D + Variáveis Clínicas) e retorna classificação CN/MCI/DEM.
+    O arquivo .nii ou .nii.gz é obrigatório para extração de features volumétricas.
+    Atributos clínicos (Idade, MMSE, MoCA, CDR, CDR-SB, Escolaridade) alimentam o MLP tabular.
+    Caso algum dado clínico esteja ausente, o sistema aplica fallback seguro e imputação clínica.
     `prediction_date` é obrigatório e deve ser enviado no formato YYYY-MM-DD.
     """
     if not model_service.is_loaded:
@@ -61,7 +66,16 @@ async def predict(
         tmp_path = tmp.name
 
     try:
-        clinical = ClinicalFeatures(age=age, mmse=mmse, cdr=cdr, cdrtot=cdrtot)
+        clinical = ClinicalFeatures(
+            age=age,
+            mmse=mmse,
+            moca=moca,
+            cdr=cdr,
+            cdrtot=cdrtot,
+            cdrsb=cdrsb,
+            education_years=education_years,
+            escolaridade=escolaridade,
+        )
         result = model_service.predict(tmp_path, clinical, prediction_date=prediction_date)
         result.patient_id = patient_id
 
@@ -70,3 +84,4 @@ async def predict(
     finally:
         if tmp_path:
             os.unlink(tmp_path)
+

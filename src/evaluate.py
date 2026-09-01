@@ -1,13 +1,16 @@
 from __future__ import annotations
+import sys
+from pathlib import Path
 
-# pyrefly: ignore [missing-import]
+# Garante que a raiz do projeto esteja no sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import torch
-# pyrefly: ignore [missing-import]
 import torch.nn.functional as F
-# pyrefly: ignore [missing-import]
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, f1_score, balanced_accuracy_score, confusion_matrix
-# pyrefly: ignore [missing-import]
 import numpy as np
 
 from src.datasets.mri_dataset import MRIDataset
@@ -15,6 +18,7 @@ from src.models.cnn_3d import SimpleResNet3D
 from src.models.hybrid_cnn_resnet_transformer import HybridCNNResNetTransformer3D
 from src.utils.helpers import load_config, get_device
 from src.data_prep.preprocess import build_preprocessing_pipeline
+
 
 
 def evaluate(config_path: str, split: str = "val") -> None:
@@ -42,7 +46,11 @@ def evaluate(config_path: str, split: str = "val") -> None:
         ).to(device)
 
     checkpoint = torch.load("checkpoints/best_model.pth", map_location=device)
-    model.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
+    state = checkpoint.get("model_state_dict", checkpoint)
+    try:
+        model.load_state_dict(state, strict=True)
+    except Exception:
+        model.load_state_dict(state, strict=False)
     model.eval()
 
     all_preds = []
@@ -52,7 +60,8 @@ def evaluate(config_path: str, split: str = "val") -> None:
         for batch in loader:
             images = batch["image"].to(device)
             labels = batch["label"].to(device)
-            outputs = model(images)
+            clinical = batch["clinical"].to(device) if "clinical" in batch else None
+            outputs = model(images, clinical)
             probs = F.softmax(outputs, dim=1)
             preds = torch.argmax(probs, dim=1)
             all_preds.extend(preds.cpu().numpy())

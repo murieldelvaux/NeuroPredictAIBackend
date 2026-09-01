@@ -1,11 +1,18 @@
 from __future__ import annotations
+import sys
+from pathlib import Path
+
+# Garante que a raiz do projeto esteja no sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 # pyrefly: ignore [missing-import]
 import torch
 # pyrefly: ignore [missing-import]
 import torch.nn as nn
 # pyrefly: ignore [missing-import]
 import torch.optim as optim
-from pathlib import Path
 # pyrefly: ignore [missing-import]
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from sklearn.metrics import classification_report, f1_score, balanced_accuracy_score
@@ -19,6 +26,7 @@ from src.utils.helpers import load_config, get_device
 from src.data_prep.preprocess import build_preprocessing_pipeline
 from src.utils.focal_loss import FocalLoss
 from src.utils.brain_ood import fit_brain_reference
+
 
 
 def _effective_num_class_weights(labels: np.ndarray, num_classes: int, beta: float = 0.999) -> np.ndarray:
@@ -110,8 +118,7 @@ def train(config_path: str) -> None:
 
     gamma = float(cfg["training"].get("focal_gamma", 2.0))
     criterion = FocalLoss(weight=class_weights, gamma=gamma)
-    lr = float(cfg["training"].get("learning_rate", 1e-4))
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
+    optimizer = optim.Adam(model.parameters(), lr=float(cfg["training"].get("learning_rate", 1e-4)), weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=4, factor=0.5)
 
     checkpoints_dir = Path("checkpoints")
@@ -128,22 +135,19 @@ def train(config_path: str) -> None:
     )
     print(f"Brain OOD reference fitted with {brain_ood_reference['fit_samples']} samples.")
 
-    from tqdm import tqdm
-
     for epoch in range(cfg["training"]["epochs"]):
         model.train()
         running_loss = 0.0
-        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg['training']['epochs']} [Train]", leave=False)
-        for batch in train_pbar:
+        for batch in train_loader:
             images = batch["image"].to(device)
             labels = batch["label"].to(device)
+            clinical = batch["clinical"].to(device) if "clinical" in batch else None
             optimizer.zero_grad()
-            outputs = model(images)
+            outputs = model(images, clinical)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * images.size(0)
-            train_pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         train_loss = running_loss / len(train_ds)
 
@@ -152,12 +156,12 @@ def train(config_path: str) -> None:
         all_preds, all_labels = [], []
         all_probs = []
 
-        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{cfg['training']['epochs']} [Val]", leave=False)
         with torch.no_grad():
-            for batch in val_pbar:
+            for batch in val_loader:
                 images = batch["image"].to(device)
                 labels_b = batch["label"].to(device)
-                outputs = model(images)
+                clinical_b = batch["clinical"].to(device) if "clinical" in batch else None
+                outputs = model(images, clinical_b)
                 val_loss += criterion(outputs, labels_b).item() * images.size(0)
                 probs = torch.softmax(outputs, dim=1)
                 all_preds.extend(outputs.argmax(dim=1).cpu().numpy())
