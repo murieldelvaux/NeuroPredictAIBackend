@@ -1,6 +1,8 @@
-from __future__ import annotations
+from typing import Optional
 
+# pyrefly: ignore [missing-import]
 import torch
+# pyrefly: ignore [missing-import]
 import torch.nn as nn
 
 
@@ -30,6 +32,6 @@ class SimpleResNet3D(nn.Module):
             nn.Linear(128, num_classes),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, clinical: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.encoder(x)
         return self.classifier(x)

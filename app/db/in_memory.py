@@ -476,15 +476,35 @@ def _integrate_feedback_into_training(patient_id: str, diagnosis: str, clinical_
         return
 
     mri_path = str(_patient_mri_file_path(patient_id, filename))
+    if not Path(mri_path).exists():
+        logger.info(f"Exame MRI {mri_path} não encontrado fisicamente no disco. Ignorando inclusão no dataset de treino.")
+        return
+
     label_map = {"CN": 0, "MCI": 1, "DEM": 2}
     label_id = label_map.get(diagnosis, 0)
 
     try:
         df = pd.read_csv(csv_file)
+        c_dict = dict(clinical_data or {})
+        
+        age_val = float(c_dict.get("age", 70.0)) if c_dict.get("age") is not None else 70.0
+        mmse_val = float(c_dict.get("mmse", 28.0)) if c_dict.get("mmse") is not None else (29.0 if label_id == 0 else (24.0 if label_id == 1 else 18.0))
+        moca_val = float(c_dict.get("moca", round(min(30.0, max(0.0, 0.88 * mmse_val + 1.1)), 1))) if c_dict.get("moca") is not None else round(min(30.0, max(0.0, 0.88 * mmse_val + 1.1)), 1)
+        cdr_val = float(c_dict.get("cdr", 0.0 if label_id == 0 else (0.5 if label_id == 1 else 1.0))) if c_dict.get("cdr") is not None else (0.0 if label_id == 0 else (0.5 if label_id == 1 else 1.0))
+        cdrsb_val = float(c_dict.get("cdrtot", cdr_val * 2.5)) if c_dict.get("cdrtot") is not None else (cdr_val * 2.5)
+        educ_val = float(c_dict.get("education_years", 16.0)) if c_dict.get("education_years") is not None else 16.0
+
         if mri_path in df["image"].values:
             df.loc[df["image"] == mri_path, "label_name"] = diagnosis
             df.loc[df["image"] == mri_path, "label_id"] = label_id
             df.loc[df["image"] == mri_path, "split"] = "train"
+            df.loc[df["image"] == mri_path, "AGE"] = age_val
+            df.loc[df["image"] == mri_path, "MMSE"] = mmse_val
+            df.loc[df["image"] == mri_path, "MOCA"] = moca_val
+            df.loc[df["image"] == mri_path, "CDR"] = cdr_val
+            df.loc[df["image"] == mri_path, "CDRSB"] = cdrsb_val
+            df.loc[df["image"] == mri_path, "EDUC"] = educ_val
+            df.loc[df["image"] == mri_path, "CDRTOT"] = cdr_val
         else:
             new_row = {
                 "image": mri_path,
@@ -492,6 +512,13 @@ def _integrate_feedback_into_training(patient_id: str, diagnosis: str, clinical_
                 "label_name": diagnosis,
                 "PTID": patient_id,
                 "split": "train",
+                "AGE": age_val,
+                "MMSE": mmse_val,
+                "MOCA": moca_val,
+                "CDR": cdr_val,
+                "CDRSB": cdrsb_val,
+                "EDUC": educ_val,
+                "CDRTOT": cdr_val,
                 "source": "CLINICAL_FEEDBACK",
             }
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -499,6 +526,7 @@ def _integrate_feedback_into_training(patient_id: str, diagnosis: str, clinical_
         logger.info(f"Feedback integrado ao dataset para o paciente {patient_id}: {diagnosis}")
     except Exception as e:
         logger.error(f"Erro ao integrar feedback no dataset: {e}")
+
 
 
 async def add_patient_mri_file(patient_id: str, uploaded_file) -> MRIFile:

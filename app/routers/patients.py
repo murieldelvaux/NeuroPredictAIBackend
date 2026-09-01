@@ -131,9 +131,16 @@ async def validate_diagnosis(
     """
     try:
         updated = await validate_patient_diagnosis(patient_id, payload.diagnosis, payload.notes)
+        
+        # Dispara re-treinamento contínuo em background de forma segura
+        from app.services.training_worker import training_worker
+        training_worker.trigger_training(epochs=2, lr=1e-5)
+        
         return _attach_absolute_mri_url(updated, request)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 
 
 @router.post("/{patient_id}/mri-file", response_model=MRIFile)
